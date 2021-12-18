@@ -16,6 +16,8 @@ const web3Provider = new Web3('https://mainnet.infura.io/v3/83782f0d2c51432d91da
 
 const Tx = require('ethereumjs-tx').Transaction;
 
+const axios = require('axios').default;
+
 
 router.post('/api/signup', async ( req, res ) => {
 
@@ -42,13 +44,16 @@ router.post('/api/signup', async ( req, res ) => {
       const password = await bcrypt.hash(plainTextPassword, 10)
 
       const account = web3Provider.eth.accounts.create();
-      console.log(account)
 
       const response = await User({
             username,
             password,
             address: account.address,
-            privateKey: account.privateKey
+            privateKey: account.privateKey,
+            tokenContracts: [
+              "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+              "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+            ]
       })
 
       try {
@@ -72,7 +77,7 @@ router.post('/api/login', async ( req, res ) => {
 
       const user = await User.findOne({ username }).lean()
       if(!user) {
-            return res.json({ status: 'error', error: 'Invalid email/password'})
+            return res.json({ status: 'error', error: 'Invalid username/password'})
       }
 
       if(await bcrypt.compare(password, user.password)) {
@@ -80,7 +85,7 @@ router.post('/api/login', async ( req, res ) => {
 
             const token = jwt.sign({ 
                   id: user._id, 
-                  email: user.email 
+                  username: user.username 
             }, JWT_SECRET)
 
             return res.json({ status: 'ok', data: token})
@@ -91,60 +96,85 @@ router.post('/api/login', async ( req, res ) => {
 
 router.post('/api/profile', async ( req, res ) => {
       
+      const { token } = req.body
+
+      try{
+            const user = jwt.verify(token, JWT_SECRET)
+            const username = user.username;
+
+            const profile = await User.findOne({ username }, {username: 1, address: 1, _id: 0}).lean()
+            res.json({ status: 'ok', data: {profile}})
+
+        } catch(error) {
+            res.json({status: 'error', error: 'Please login'})
+      }
+});
+
+router.post('/api/importToken', async ( req, res ) => {
+      
+      const { token, address } = req.body
+
+      try{
+            const user = jwt.verify(token, JWT_SECRET)
+            const username = user.username;
+
+            const profile = await User.findOne({ username }, {username: 1, tokenContracts: 1, _id: 0}).lean()
+            var tokenContracts = profile.tokenContracts
+            tokenContracts.push(address)
+            await User.updateOne(
+                  { username },
+                  { 
+                        $set: { tokenContracts }
+                  }
+            )
+
+            res.json({ status: 'ok' })
+
+        } catch(error) {
+            res.json({status: 'error', error: 'Please login'})
+      }
+});
+
+router.post('/api/ethBalance', async ( req, res ) => {
+      
     const { token } = req.body
 
     try{
           const user = jwt.verify(token, JWT_SECRET)
           const username = user.username;
 
-          const profile = await User.findOne({ username }, {address: 1, _id: 0}).lean()
-          res.json({ status: 'ok', data: {profile}})
+          const profile = await User.findOne({ username }, { address: 1, _id: 0}).lean()
+          const balance = await web3Provider.eth.getBalance(profile.address)
+          res.json({ status: 'ok', data: { balance }})
 
       } catch(error) {
           res.json({status: 'error', error: 'Please login'})
     }
 });
-// router.post('/api/ethBalance', async ( req, res ) => {
-      
-//     const { token } = req.body
 
-//     try{
-//           const user = jwt.verify(token, JWT_SECRET)
-//           const username = user.username;
-
-//           const profile = await User.findOne({ username }, { address: 1, _id: 0}).lean()
-//           const balance =
-//           res.json({ status: 'ok', data: { balance }})
-
-//       } catch(error) {
-//           res.json({status: 'error', error: 'Please login'})
-//     }
-// });
-
-router.post('/api/balance/:contractId', async ( req, res ) => {
+router.post('/api/allBalances', async ( req, res ) => {
       
     const { token } = req.body
-    
-    const tokenAddress = req.params.contractId
 
     try{
           const user = jwt.verify(token, JWT_SECRET)
           const username = user.username;
+          const profile = await User.findOne({ username }, { address: 1, tokenContracts: 1, _id: 0}).lean()
+          const tokens = profile.tokenContracts
+          var parsedTokens = [];
+          for(var i = 0; i < tokens.length; i++) {
+            const response = await axios.get(`https://api.etherscan.io/api?module=contract&action=getabi&address=${tokens[i]}&apikey=7F9FANI79KMS5W817Z41IXA12NIT1UWPKE`)
+            const contract = new web3Provider.eth.Contract(JSON.parse(response.data.result), tokens[i])
+            const balance = await contract.methods.balanceOf(profile.address).call();
+            const symbol = await contract.methods.symbol().call();
+            parsedTokens.push({balance, symbol, address: tokens[i]})
+          }
 
-          const response = await fetch(`https://api.etherscan.io/api?module=contract&action=getabi&address=${tokenAddress}`)
-          const json = response.json()
-          const abi = json.result;
-
-          const contract = new web3Provider.eth.contract(abi, tokenAddress)
-
-          const profile = await User.findOne({ username }, { address: 1, _id: 0}).lean()
-          const balance = await contract.methods.balanceOf(profile.address).call();
-          const symbol = await contract.methods.symbol().call();
-          
-          res.json({ status: 'ok', data: { balance, symbol }})
+          res.json({ status: 'ok', tokens: parsedTokens})
 
       } catch(error) {
-          res.json({status: 'error', error: 'Please login'})
+          console.log(error)
+          res.json({status: 'error', error: error})
     }
 });
 

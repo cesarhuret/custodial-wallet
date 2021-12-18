@@ -17,7 +17,11 @@ const UserSchema = mongoose.Schema({
     privateKey: {
         type: String,
         required: true,
-    }
+    },
+    tokenContracts: [{
+      type: String,
+      required: false
+    }]
 
 }, { collection: 'users' }
 
